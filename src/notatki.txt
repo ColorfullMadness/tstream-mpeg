@@ -1,0 +1,12 @@
+dzialajacy parser, 
+3 zadania dodatkowe 
+    - male kroki w instrukcjach 
+        - dekodowanie wizji
+            - nie wiadomo kiedy konies
+    
+    - rozbudowanie parsera o naglowek mpeg-audio   
+        - taki sam dla warstwy 1 2 3 
+        - informacje jak ffplay
+        - wyswietlenie informacji
+    
+    - dopiecie do projektu biblioteki i zdekompresowanej do wavea
