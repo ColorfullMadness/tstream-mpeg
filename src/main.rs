@@ -1,21 +1,12 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::hash::Hash;
-use std::io::{prelude::*, BufReader};
+use std::io::{prelude::*, BufReader, BufWriter, StdoutLock};
 use std::iter::Map;
 use std::ops::Deref;
 use term::color;
 use std::time::Instant;
-
-fn byte_to_bin(input: u8) {                                                    
-    let mut maska: u8 = 0x80;
-    println!("Input: {}", input);
-    for _ in 0..8 {
-        print!("{}", if (input & maska) > 0 { 1 } else { 0 });
-        maska >>= 1;
-    }
-    println!();
-}
+use std::io::Write;
 
 #[derive(PartialEq)]
 enum State {
@@ -39,7 +30,7 @@ struct TsPacket {
 }
 
 impl TsPacket {
-    fn parse(buffer: [u8;188], pes_packet: &mut PESPacket, mut is_first: &mut bool) -> TsPacket {
+    fn parse(buffer: [u8;188], pes_packet: &mut PESPacket, mut is_first: &mut bool, lock: &mut StdoutLock) -> TsPacket {
         let sb = buffer[0];
         let tei = buffer[1] & 0x80;
         let pus = (buffer[1] & 0x40) >> 6;
@@ -62,7 +53,7 @@ impl TsPacket {
             pes_packet.content.add_buffer(buffer, 4 + 1 + 14 + 1);
             pes_packet.state = State::Start;
 
-            pes_packet.content.read_mpeg_header();
+            pes_packet.content.read_mpeg_header(lock);
 
         } else if  pid == 136 && pes_packet.prev_cc + 1 == cc && pes_packet.prev_cc + 1 == 15 {
             pes_packet.state = State::End;
@@ -88,8 +79,8 @@ impl TsPacket {
         }
     }
 
-    fn print(&self){
-        print!(
+    fn print(&self, lock: &mut StdoutLock){
+        write!(lock,
             "TS: SB={} E={} S={} P={} PID={:4} TSC={} AF={} CC={:3}",
             self.sync_byte,
             self.transport_error_indicator,
@@ -99,12 +90,12 @@ impl TsPacket {
             self.transport_scrambling_control,
             self.adaptation_field_control,
             self.continuity_counter
-        );
+        ).expect("Problem with write ts packet");
         if self.adaptation_field.is_some() {
-            self.adaptation_field.as_ref().unwrap().print();
+            self.adaptation_field.as_ref().unwrap().print(lock);
         }
         if self.pes_header.is_some() {
-            self.pes_header.unwrap().print();
+            self.pes_header.unwrap().print(lock);
         }
     }
 }
@@ -172,10 +163,10 @@ impl TsPacketAdaptationField{
         Some(tspaf)
     }
 
-    fn print(&self) {
+    fn print(&self, lock: &mut StdoutLock) {
         let mut t = term::stdout().unwrap();
         t.fg(color::YELLOW).expect("Color error?!");
-        print!(" AF: L={:3} DC={:2} RA={:2} SP={:2} PR={:2} OR={:2} SP={:2} TP={:2} EX={:2}", 
+        write!(lock," AF: L={:3} DC={:2} RA={:2} SP={:2} PR={:2} OR={:2} SP={:2} TP={:2} EX={:2}", 
         self.adaptation_field_length, 
         self.discontinuity_ind, 
         self.random_access_ind, 
@@ -184,18 +175,18 @@ impl TsPacketAdaptationField{
         self.original_program_clock_ref_flag, 
         self.splicing_point_flag, 
         self.transport_private_data_flag,
-        self.adaptation_field_ext_flag);
+        self.adaptation_field_ext_flag).expect("Problem with write ts adaptation fiedld");
         
 
         t.fg(color::BLUE).expect("Collor error!?");
         if self.program_clock_ref_flag == 1 {
             let clock: f64 = 27_000_000.0;
             let pcr = (self.program_clock_ref_base.unwrap() * 300 + self.program_clock_ref_ext.unwrap() as u64) as f64 / clock;
-            print!(" PCR: {:.0} (Time={:.6}s)", pcr * clock, pcr);
+            write!(lock," PCR: {:.0} (Time={:.6}s)", pcr * clock, pcr);
         }
         t.fg(color::WHITE).expect("Collor error!?");
 
-        print!(" Stuffing={}",self.stuffing);
+        write!(lock," Stuffing={}",self.stuffing);
     }
 }
 
@@ -246,14 +237,14 @@ impl PESHeader {
         pesh
     }
 
-    fn print(&self) {
+    fn print(&self, lock: &mut StdoutLock) {
         let mut t = term::stdout().unwrap();
         t.fg(color::BRIGHT_GREEN).expect("Collor error");
-        print!(" Started PES: PSCP={} SID={} L={} PHL={}",
+        write!(lock," Started PES: PSCP={} SID={} L={} PHL={}",
         self.packet_start_code_prefix,
         self.stream_id,
         self.pes_packet_length,
-        self.pes_header_data_length);
+        self.pes_header_data_length).expect("Problem with write print pesheader");
         t.fg(color::WHITE).expect("Collor error");
     }
 }
@@ -273,7 +264,7 @@ impl PESContent {
         }
     }
 
-    fn read_mpeg_header(&self){
+    fn read_mpeg_header(&self, lock: &mut StdoutLock){
         let frame_sync: u16 = (*self.content.get(0).unwrap() as u16) << 3 | ((*self.content.get(1).unwrap() as u16 & 0xE0) >> 5);
 
         if frame_sync == 2047 {
@@ -350,7 +341,7 @@ impl PESContent {
              
             let mut t = term::stdout().unwrap();
             t.fg(color::BRIGHT_MAGENTA).expect("Collor error!?");
-            println!("MPEG_Audio_header\nFrame_sync:{} MPEG_Audio_Version:{}, Layer_description:{}, Protection_bit:{} Bitrate_index:{}kbps Sampling_rate_frequency:{}, srf:{}Hz  Padding bit:{} Channel mode:{} Copyright:{} Oryginal:{} Emphasis:{}\nFrame_size:{} bytes",
+            writeln!(lock,"MPEG_Audio_header\nFrame_sync:{} MPEG_Audio_Version:{}, Layer_description:{}, Protection_bit:{} Bitrate_index:{}kbps Sampling_rate_frequency:{}, srf:{}Hz  Padding bit:{} Channel mode:{} Copyright:{} Oryginal:{} Emphasis:{}\nFrame_size:{} bytes",
             frame_sync, 
             mpeg_audio_version, 
             layer_description, 
@@ -363,7 +354,7 @@ impl PESContent {
             copyright,
             oryginal,
             emphasis,
-            frame_size);
+            frame_size).expect("Problem with write ");
             t.fg(color::WHITE).expect("Collor error!?");
         }
     }
@@ -372,13 +363,8 @@ impl PESContent {
         print!("Len: {} ", self.content.len());
     }
 
-    fn write(&self) {
-        let mut file = File::options()
-            .write(true)
-            .append(true)
-            .open("src/output.txt").expect("Couldn't open file");
-
-        if file.write_all(&self.content).is_err() {
+    fn write(&self, writer:&mut BufWriter<&File>) {
+        if writer.write_all(&self.content).is_err() {
             panic!("Couldn't write to file!");
         } else {
             println!("Writen: {:?}",self.content);
@@ -394,6 +380,15 @@ fn main() -> std::io::Result<()> {
     let file: &File = &File::open("src/example_new.ts").unwrap();
     let mut reader = BufReader::new(file);
     println!("Elapsed file: {:.2?}",now.elapsed());
+
+    let mut stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+
+    let mut file_out = &File::options()
+        .write(true)
+        .append(true)
+        .open("src/output.txt").expect("Couldn't open file");
+    let mut writer = BufWriter::new(file_out);
 
     let _elements_num: u64 = 188;
     let mut buffer = [0u8; 188];
@@ -424,10 +419,10 @@ fn main() -> std::io::Result<()> {
         
             t.fg(color::WHITE).expect("Collor error!?");
 
-            tsph = TsPacket::parse(buffer, &mut pes_packet, &mut is_first);
+            tsph = TsPacket::parse(buffer, &mut pes_packet, &mut is_first,lock.by_ref());
 
             print!("{:010} ",ts_packet_id);
-            tsph.print();
+            tsph.print(lock.by_ref());
 
             t.fg(color::BRIGHT_CYAN).expect("Collor Error");
 
@@ -444,13 +439,14 @@ fn main() -> std::io::Result<()> {
             
             println!();
             ts_packet_id += 1;
-            if ts_packet_id == 19 {
-               // return Ok(());
+            if ts_packet_id == 100000 {
+                println!("Elapsed file: {:.2?}",now.elapsed());
+                return Ok(());
             }
             
         }
         pes_packet.content.print_size();
-        pes_packet.content.write();
+        pes_packet.content.write(&mut writer);
     }
     
     Ok(())
